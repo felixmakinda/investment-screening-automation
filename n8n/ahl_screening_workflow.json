@@ -1,0 +1,881 @@
+{
+  "id": "ahlScreening0001",
+  "name": "AHL deal screening",
+  "nodes": [
+    {
+      "id": "ahl-01",
+      "name": "Upload PDFs (n8n form)",
+      "type": "n8n-nodes-base.formTrigger",
+      "typeVersion": 2.3,
+      "position": [
+        0,
+        300
+      ],
+      "parameters": {
+        "formTitle": "AHL deal screening",
+        "formDescription": "Upload the investment memo and the audited accounts. You will review the findings before anything is released.",
+        "formFields": {
+          "values": [
+            {
+              "fieldLabel": "Investment memo (PDF)",
+              "fieldType": "file",
+              "multipleFiles": false,
+              "acceptFileTypes": ".pdf",
+              "requiredField": true
+            },
+            {
+              "fieldLabel": "Audited accounts (PDF)",
+              "fieldType": "file",
+              "multipleFiles": false,
+              "acceptFileTypes": ".pdf",
+              "requiredField": true
+            }
+          ]
+        },
+        "responseMode": "lastNode",
+        "options": {
+          "appendAttribution": false,
+          "buttonLabel": "Start screening"
+        }
+      },
+      "webhookId": "ahl-screening-01"
+    },
+    {
+      "id": "ahl-02",
+      "name": "Read PDFs (local, no AI)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        240,
+        300
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "http://helper:8000/read",
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "options": {
+          "timeout": 120000
+        },
+        "bodyParameters": {
+          "parameters": [
+            {
+              "parameterType": "formBinaryData",
+              "name": "memo",
+              "inputDataFieldName": "Investment_memo__PDF_"
+            },
+            {
+              "parameterType": "formBinaryData",
+              "name": "accounts",
+              "inputDataFieldName": "Audited_accounts__PDF_"
+            }
+          ]
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "id": "ahl-03",
+      "name": "AI models used",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        480,
+        300
+      ],
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "a",
+              "name": "main_model",
+              "value": "anthropic/claude-sonnet-5.5",
+              "type": "string"
+            },
+            {
+              "id": "b",
+              "name": "backup_model",
+              "value": "gpt-6-sol",
+              "type": "string"
+            }
+          ]
+        },
+        "includeOtherFields": true,
+        "options": {}
+      }
+    },
+    {
+      "id": "ahl-04",
+      "name": "AI reader: Claude (OpenRouter)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        740,
+        300
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "https://openrouter.ai/api/v1/chat/completions",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "openRouterApi",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: $json.main_model, provider: { sort: 'throughput', zdr: true, data_collection: 'deny', require_parameters: true }, ...$json.ai_request }) }}",
+        "options": {
+          "timeout": 150000
+        }
+      },
+      "credentials": {
+        "openRouterApi": {
+          "id": "",
+          "name": "OpenRouter account"
+        }
+      },
+      "onError": "continueRegularOutput",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 5000
+    },
+    {
+      "id": "ahl-05",
+      "name": "Reader finished?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        960,
+        300
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "c",
+              "leftValue": "={{ $json.choices?.[0]?.finish_reason === 'stop' && ($json.choices[0].message.content.match(/\"value\"\\s*:\\s*\"/g) || []).length >= 40 }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "ahl-06",
+      "name": "Backup reader: OpenAI",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1120,
+        460
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.openai.com/v1/chat/completions",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "openAiApi",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: $('AI models used').first().json.backup_model, store: false, ...$('Read PDFs (local, no AI)').first().json.ai_request }) }}",
+        "options": {
+          "timeout": 150000
+        }
+      },
+      "credentials": {
+        "openAiApi": {
+          "id": "",
+          "name": "OpenAi account"
+        }
+      },
+      "onError": "continueRegularOutput",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 5000
+    },
+    {
+      "id": "ahl-07",
+      "name": "Check answers (rules, no AI)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1340,
+        300
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "http://helper:8000/validate",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ run_id: $('Read PDFs (local, no AI)').first().json.run_id, reader_a: $json.choices?.[0]?.message?.content ?? null, model_a: ($json.model ?? 'no answer') + ($('Backup reader: OpenAI').isExecuted ? ' (backup)' : '') }) }}",
+        "options": {
+          "timeout": 240000
+        }
+      },
+      "executeOnce": true,
+      "onError": "continueErrorOutput"
+    },
+    {
+      "id": "ahl-08",
+      "name": "Suggest scores: Claude (OpenRouter)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1600,
+        300
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "https://openrouter.ai/api/v1/chat/completions",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "openRouterApi",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: $('AI models used').first().json.main_model, provider: { sort: 'throughput', zdr: true, data_collection: 'deny', require_parameters: true }, ...$json.ai_request }) }}",
+        "options": {
+          "timeout": 150000
+        }
+      },
+      "credentials": {
+        "openRouterApi": {
+          "id": "",
+          "name": "OpenRouter account"
+        }
+      },
+      "onError": "continueRegularOutput",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 5000
+    },
+    {
+      "id": "ahl-09",
+      "name": "Scores finished?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1820,
+        300
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "c",
+              "leftValue": "={{ $json.choices?.[0]?.finish_reason === 'stop' && $json.choices[0].message.content.includes('\"scores\"') }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "ahl-10",
+      "name": "Backup scores: OpenAI",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1980,
+        460
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.openai.com/v1/chat/completions",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "openAiApi",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: $('AI models used').first().json.backup_model, store: false, ...$('Check answers (rules, no AI)').first().json.ai_request }) }}",
+        "options": {
+          "timeout": 150000
+        }
+      },
+      "credentials": {
+        "openAiApi": {
+          "id": "",
+          "name": "OpenAi account"
+        }
+      },
+      "onError": "continueRegularOutput",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 5000
+    },
+    {
+      "id": "ahl-11",
+      "name": "Check suggestions (rules, no AI)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2200,
+        300
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "http://helper:8000/assess",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ run_id: $('Read PDFs (local, no AI)').first().json.run_id, assessment: $json.choices?.[0]?.message?.content ?? null, model: ($json.model ?? 'no answer') + ($('Backup scores: OpenAI').isExecuted ? ' (backup)' : '') }) }}",
+        "options": {
+          "timeout": 240000
+        }
+      },
+      "executeOnce": true,
+      "onError": "continueErrorOutput"
+    },
+    {
+      "id": "ahl-12",
+      "name": "Build review page",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2460,
+        300
+      ],
+      "parameters": {
+        "jsCode": "// Turns the findings into a form a person can read and change.\nconst r = $input.first().json, c = $('Check answers (rules, no AI)').first().json.counts;\nconst safe = t => String(t ?? '').replace(/[&<>]/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[m]));\nconst high = r.exceptions.filter(e => e[1] === 'High'), rest = r.exceptions.length - high.length;\nconst rows = high.map(e => `<tr><td><b>${e[0]}</b></td><td><b>${safe(e[2])}</b><br>${safe(e[3])}</td></tr>`).join('');\nconst opts = list => ({ values: list.map(option => ({ option })) });\nconst choices = { B4: ['None','Low','Medium','High'], B9: ['Yes','No','Maybe'], B10: ['Yes, Adaptation','Yes, Mitigation','Maybe','No'], B11: ['Yes','No','Maybe'], B13: ['Yes','No','Maybe'], B15: ['Yes','No','Maybe'] };\nconst ask = (x, hint) => x.cell[0] === 'D' ? { fieldLabel: `${x.cell} ${x.label}: ${hint}`, fieldType: 'dropdown', fieldOptions: opts(['1','2','3','Leave blank']), requiredField: false }\n  : choices[x.cell] ? { fieldLabel: `${x.cell} ${x.label}: ${hint}`, fieldType: 'dropdown', fieldOptions: opts([...choices[x.cell], 'Leave blank']), requiredField: false }\n  : x.cell === 'B2' ? { fieldLabel: `${x.cell} ${x.label}: ${hint}`, fieldType: 'text', requiredField: false } : null;\nconst form = [\n  { fieldType: 'html', elementName: 'summary', html: `<p><b>${c.accepted}</b> memo answers verified, <b>${c.blank}</b> not stated, <b>${c.blocked}</b> blocked, <b>${c.review}</b> need a person.</p><h3>${high.length} high-severity issues</h3><table>${rows}</table><p>${rest} more issues are listed in the Exceptions tab of the workbook.</p><h3>Suggestions</h3><p>Leave a field untouched to accept the suggestion.</p>` },\n  ...r.review.map(x => ask(x, `suggested ${x.suggested}. ${x.why.replace(/^Suggested\\. /, '')}`)),\n  ...r.blank.map(x => ask(x, 'no information found')),\n  { fieldLabel: 'Your name', fieldType: 'text', requiredField: true },\n  { fieldLabel: 'Decision', fieldType: 'dropdown', fieldOptions: opts(['Approve','Reject']), requiredField: true },\n].filter(Boolean);\nreturn [{ json: { form } }];"
+      }
+    },
+    {
+      "id": "ahl-13",
+      "name": "Review and approve (n8n form)",
+      "type": "n8n-nodes-base.form",
+      "typeVersion": 2.3,
+      "position": [
+        2700,
+        300
+      ],
+      "parameters": {
+        "operation": "page",
+        "defineForm": "json",
+        "jsonOutput": "={{ JSON.stringify($json.form) }}",
+        "options": {
+          "formTitle": "Review before release",
+          "formDescription": "Nothing is released until you decide.",
+          "buttonLabel": "Submit decision"
+        }
+      },
+      "webhookId": "ahl-screening-13"
+    },
+    {
+      "id": "ahl-14",
+      "name": "Approved?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        2940,
+        300
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "c",
+              "leftValue": "={{ $json.Decision }}",
+              "rightValue": "Approve",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "ahl-15",
+      "name": "Record decisions",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3180,
+        200
+      ],
+      "parameters": {
+        "jsCode": "// Keeps only the fields the reviewer changed.\nconst approvals = {};\nfor (const [label, v] of Object.entries($input.first().json)) {\n  const cell = (label.match(/^([BD]\\d+) /) || [])[1];\n  if (cell && v) approvals[cell] = v === 'Leave blank' ? null : cell[0] === 'D' ? Number(v) : v;\n}\nreturn [{ json: { run_id: $('Read PDFs (local, no AI)').first().json.run_id, approvals, reviewer: $input.first().json['Your name'] } }];"
+      }
+    },
+    {
+      "id": "ahl-16",
+      "name": "Fill Excel and verify (no AI)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        3420,
+        200
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "http://helper:8000/fill",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json) }}",
+        "options": {
+          "timeout": 240000
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "id": "ahl-17",
+      "name": "Get finished workbook",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        3680,
+        200
+      ],
+      "parameters": {
+        "url": "=http://helper:8000{{ $json.download }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "file",
+              "outputPropertyName": "data"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "ahl-18",
+      "name": "Deliver workbook (n8n form)",
+      "type": "n8n-nodes-base.form",
+      "typeVersion": 2.3,
+      "position": [
+        3920,
+        200
+      ],
+      "parameters": {
+        "operation": "completion",
+        "respondWith": "returnBinary",
+        "completionTitle": "Screening complete",
+        "completionMessage": "={{ $('Fill Excel and verify (no AI)').first().json.status }}. Score {{ ($('Fill Excel and verify (no AI)').first().json.results.score * 100).toFixed(1) }}%, cautious case {{ ($('Fill Excel and verify (no AI)').first().json.cautious_score * 100).toFixed(1) }}%. {{ $('Fill Excel and verify (no AI)').first().json.exceptions }} issues to follow up.",
+        "inputDataFieldName": "data",
+        "options": {}
+      },
+      "webhookId": "ahl-screening-18"
+    },
+    {
+      "id": "ahl-19",
+      "name": "Rejected",
+      "type": "n8n-nodes-base.form",
+      "typeVersion": 2.3,
+      "position": [
+        3180,
+        420
+      ],
+      "parameters": {
+        "operation": "completion",
+        "respondWith": "text",
+        "completionTitle": "Rejected",
+        "completionMessage": "No workbook was released. The run is kept for reference.",
+        "options": {}
+      },
+      "webhookId": "ahl-screening-19"
+    },
+    {
+      "id": "ahl-20",
+      "name": "Could not finish",
+      "type": "n8n-nodes-base.form",
+      "typeVersion": 2.3,
+      "position": [
+        1340,
+        770
+      ],
+      "parameters": {
+        "operation": "completion",
+        "respondWith": "text",
+        "completionTitle": "This screening could not be finished",
+        "completionMessage": "={{ 'Nothing was released. Reason: ' + String($json.error?.message || $json.error?.description || 'unknown').replace(/\\\\/g, '').replace(/^.*?detail\"?: ?\"?/, '').replace(/[\"}]+$/, '') }}",
+        "options": {}
+      },
+      "webhookId": "ahl-screening-20"
+    },
+    {
+      "id": "note-20",
+      "name": "Note 20",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -60,
+        60
+      ],
+      "parameters": {
+        "content": "## 1. Read\n**Tools: n8n form, local PDF reader**\n\nThe analyst uploads two PDFs. The figures in the accounts are read on this computer, **without AI.**",
+        "width": 720,
+        "height": 420,
+        "color": 4
+      }
+    },
+    {
+      "id": "note-21",
+      "name": "Note 21",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        690,
+        0
+      ],
+      "parameters": {
+        "content": "## 2. AI reads the memo\n**Tools: Claude through OpenRouter. Backup: OpenAI**\n\nAI reads **only the memo**, and every answer must include an exact quote. If the first service is down or does not finish, the backup takes over.\n\nTo use a model on your own server, change the address here.",
+        "width": 580,
+        "height": 640,
+        "color": 5
+      }
+    },
+    {
+      "id": "note-22",
+      "name": "Note 22",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        1290,
+        60
+      ],
+      "parameters": {
+        "content": "## 3. Check\n**Tools: plain rules, no AI**\n\nEvery quote must exist in the memo. The accounts are tested. Failed answers are left blank.",
+        "width": 240,
+        "height": 420,
+        "color": 6
+      }
+    },
+    {
+      "id": "note-23",
+      "name": "Note 23",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        1550,
+        60
+      ],
+      "parameters": {
+        "content": "## 4. Suggest\n**Tools: Claude, backup OpenAI, then plain rules**\n\nAI proposes scores using AHL's own guide. Suggestions without verified evidence are dropped.",
+        "width": 860,
+        "height": 580,
+        "color": 3
+      }
+    },
+    {
+      "id": "note-24",
+      "name": "Note 24",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        2430,
+        60
+      ],
+      "parameters": {
+        "content": "## 5. A person decides\n**Tools: n8n form**\n\nThe reviewer sees the issues, changes anything, then approves or rejects.",
+        "width": 670,
+        "height": 560,
+        "color": 2
+      }
+    },
+    {
+      "id": "note-25",
+      "name": "Note 25",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        3140,
+        -40
+      ],
+      "parameters": {
+        "content": "## 6. Fill and prove\n**Tools: Excel template, LibreOffice, no AI**\n\nFills AHL's template, recalculates it, and confirms nothing else changed. Released only if every check passes.",
+        "width": 960,
+        "height": 400,
+        "color": 4
+      }
+    },
+    {
+      "id": "note-26",
+      "name": "Note 26",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        1290,
+        660
+      ],
+      "parameters": {
+        "content": "### If anything fails\nThe run stops, says why, and releases nothing.",
+        "width": 420,
+        "height": 280,
+        "color": 7
+      }
+    }
+  ],
+  "connections": {
+    "Upload PDFs (n8n form)": {
+      "main": [
+        [
+          {
+            "node": "Read PDFs (local, no AI)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read PDFs (local, no AI)": {
+      "main": [
+        [
+          {
+            "node": "AI models used",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Could not finish",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI models used": {
+      "main": [
+        [
+          {
+            "node": "AI reader: Claude (OpenRouter)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI reader: Claude (OpenRouter)": {
+      "main": [
+        [
+          {
+            "node": "Reader finished?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Reader finished?": {
+      "main": [
+        [
+          {
+            "node": "Check answers (rules, no AI)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Backup reader: OpenAI",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Backup reader: OpenAI": {
+      "main": [
+        [
+          {
+            "node": "Check answers (rules, no AI)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check answers (rules, no AI)": {
+      "main": [
+        [
+          {
+            "node": "Suggest scores: Claude (OpenRouter)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Could not finish",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Suggest scores: Claude (OpenRouter)": {
+      "main": [
+        [
+          {
+            "node": "Scores finished?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Scores finished?": {
+      "main": [
+        [
+          {
+            "node": "Check suggestions (rules, no AI)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Backup scores: OpenAI",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Backup scores: OpenAI": {
+      "main": [
+        [
+          {
+            "node": "Check suggestions (rules, no AI)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check suggestions (rules, no AI)": {
+      "main": [
+        [
+          {
+            "node": "Build review page",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Could not finish",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build review page": {
+      "main": [
+        [
+          {
+            "node": "Review and approve (n8n form)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Review and approve (n8n form)": {
+      "main": [
+        [
+          {
+            "node": "Approved?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Approved?": {
+      "main": [
+        [
+          {
+            "node": "Record decisions",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Rejected",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Record decisions": {
+      "main": [
+        [
+          {
+            "node": "Fill Excel and verify (no AI)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fill Excel and verify (no AI)": {
+      "main": [
+        [
+          {
+            "node": "Get finished workbook",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Could not finish",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get finished workbook": {
+      "main": [
+        [
+          {
+            "node": "Deliver workbook (n8n form)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Africa/Nairobi"
+  },
+  "pinData": {}
+}

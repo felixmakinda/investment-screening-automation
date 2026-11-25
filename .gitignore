@@ -1,0 +1,35 @@
+# Secrets
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*credential*
+*.sqlite*
+
+# Company documents, rules workbook and results: never published
+*.pdf
+*.xls
+*.xlsx
+*.xlsm
+*.doc
+*.docx
+*.csv
+runs/
+private/
+config/
+
+# Recordings
+*.mp4
+*.webm
+*.mov
+
+# Generated
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+venv/
+.DS_Store
+.idea/
+.vscode/
